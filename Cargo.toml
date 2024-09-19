@@ -1,0 +1,11 @@
+[package]
+name = "txn_decoder"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+ethereum-types = "0.14.1"
+rlp = "0.5.2"
+secp256k1 = "0.27.0"
+sha3 = "0.10.8"
+hex = "0.4.3"
