@@ -15,6 +15,11 @@ struct FunctionSignature {
     hex_signature: String,
 }
 
+fn getSelectorFromCallData(call_data: &str) -> String {
+    let function_selector = &call_data[0..4];
+    format!("0x{}", function_selector)
+}
+
 #[tokio::main]
 async fn main() -> Result<(), Error> {
     let function_selector = "0x07883703";

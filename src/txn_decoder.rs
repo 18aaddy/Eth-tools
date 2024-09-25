@@ -1,5 +1,6 @@
 use ethereum_types::{H160, U256, H256};
 use rlp::{Rlp, Decodable, DecoderError};
+mod utils;
 mod function_decoder;
 
 #[derive(Debug)]
@@ -172,14 +173,6 @@ fn decode_eip1559_transaction(raw_tx: &[u8]) -> Result<Transaction, Box<dyn std:
         r: rlp.val_at(10).map_err(|e| format!("Failed to decode r: {:?}", e))?,
         s: rlp.val_at(11).map_err(|e| format!("Failed to decode s: {:?}", e))?,
     })
-}
-
-fn remove_0x_prefix(hex_string: &str) -> &str {
-    if hex_string.starts_with("0x") || hex_string.starts_with("0X") {
-        &hex_string[2..]
-    } else {
-        hex_string
-    }
 }
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
