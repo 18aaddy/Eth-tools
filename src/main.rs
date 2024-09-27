@@ -1,41 +1,20 @@
-use reqwest::Error;
-use serde::Deserialize;
+// include!("../solidity-rust-parser/src/main.rs");
 
-#[derive(Deserialize, Debug)]
-struct SignatureResponse {
-    count: usize,
-    results: Vec<FunctionSignature>,
-}
-
-#[derive(Deserialize, Debug)]
-struct FunctionSignature {
-    id: u64,
-    created_at: String,
-    text_signature: String,
-    hex_signature: String,
-}
-
-fn getSelectorFromCallData(call_data: &str) -> String {
-    let function_selector = &call_data[0..4];
-    format!("0x{}", function_selector)
-}
+mod function_decoder;
+// mod function_decoder_pt2;
+mod txn_decoder;
+mod utils;
+use hex;
 
 #[tokio::main]
-async fn main() -> Result<(), Error> {
-    let function_selector = "0x07883703";
+async fn main() {
+    let txn = "0x02f9017c018202dd84b2d05e008503c3f9aa9a83042a499480a64c6d7f12c47b7c66c5b4e20e72bc1fcd5d9e8802c68af0bb140000b90104088890dc0000000000000000000000000000000000000000001386ae003d953d1bc1ba2000000000000000000000000000000000000000000000000000000000000000a000000000000000000000000071cae8cac115f39252e73abe58552a90e3d674370000000000000000000000000000000000000000000000000000000066f69e100000000000000000000000005c69bee701ef814a2b6a3edd4b1652cb9cc5aa6f0000000000000000000000000000000000000000000000000000000000000002000000000000000000000000c02aaa39b223fe8d0a0e5c4f27ead9083c756cc2000000000000000000000000d0630a2d243503591c84277342baff84854b14f8c001a006fc618de8e60e0bfce44c37eb3681f9d808cdfa89302fb03a77ca05f9c44c5da00479064ac9f0b8a7267bbb4b241d93477b0c7dbfaea851d07777efdfd1ba1a88";
 
-    // Construct the API URL
-    let url = format!("https://www.4byte.directory/api/v1/signatures/?hex_signature={}", function_selector);
+    let calldata = txn_decoder::txn_decoder(txn);
 
-    // Send the GET request
-    let response = reqwest::get(&url).await?
-        .json::<SignatureResponse>()
-        .await?;
-
-    // Print the retrieved signatures
-    for signature in response.results {
-        println!("Function Signature: {}", signature.text_signature);
+    match function_decoder::final_result_from_calldata(&hex::encode(calldata.unwrap())).await {
+        Ok(_) => println!("Function decoding successful."),
+        Err(e) => eprintln!("Failed to decode function: {}", e),
     }
-
-    Ok(())
+    
 }

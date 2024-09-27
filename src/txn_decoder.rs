@@ -1,7 +1,8 @@
+use std::{f32::consts::E, str::Bytes};
+
 use ethereum_types::{H160, U256, H256};
 use rlp::{Rlp, Decodable, DecoderError};
-mod utils;
-mod function_decoder;
+use crate::utils;
 
 #[derive(Debug)]
 enum TransactionType {
@@ -55,8 +56,7 @@ struct Transaction {
 }
 
 fn decode_transaction(hex_tx: &str) -> Result<Transaction, Box<dyn std::error::Error>> {
-    let raw_tx: Vec<u8> = hex::decode(remove_0x_prefix(hex_tx))?;
-    println!("Raw transaction: {:?}", hex::encode(&raw_tx));
+    let raw_tx: Vec<u8> = hex::decode(utils::remove_0x_prefix(hex_tx))?;
     
     if raw_tx.is_empty() {
         return Err("Empty transaction data".into());
@@ -75,7 +75,6 @@ fn decode_legacy_transaction(raw_tx: &[u8]) -> Result<Transaction, Box<dyn std::
     let rlp = Rlp::new(raw_tx);
     
     let item_count = rlp.item_count().map_err(|e| format!("Failed to get item count: {:?}", e))?;
-    println!("Legacy transaction item count: {}", item_count);
 
     if item_count != 9 {
         return Err(format!("Expected 9 items for legacy transaction, got {}", item_count).into());
@@ -110,7 +109,6 @@ fn decode_eip2930_transaction(raw_tx: &[u8]) -> Result<Transaction, Box<dyn std:
     let rlp = Rlp::new(raw_tx);
     
     let item_count = rlp.item_count().map_err(|e| format!("Failed to get item count: {:?}", e))?;
-    println!("EIP-2930 transaction item count: {}", item_count);
 
     if item_count != 11 {
         return Err(format!("Expected 11 items for EIP-2930 transaction, got {}", item_count).into());
@@ -145,7 +143,6 @@ fn decode_eip1559_transaction(raw_tx: &[u8]) -> Result<Transaction, Box<dyn std:
     let rlp = Rlp::new(raw_tx);
     
     let item_count = rlp.item_count().map_err(|e| format!("Failed to get item count: {:?}", e))?;
-    println!("EIP-1559 transaction item count: {}", item_count);
 
     if item_count != 12 {
         return Err(format!("Expected 12 items for EIP-1559 transaction, got {}", item_count).into());
@@ -175,45 +172,21 @@ fn decode_eip1559_transaction(raw_tx: &[u8]) -> Result<Transaction, Box<dyn std:
     })
 }
 
-fn main() -> Result<(), Box<dyn std::error::Error>> {
-    let legacy_tx = "f86b808509502f900082520894423163e58aabec5daa3dd1130b759d24bef0f6ea8711c37937e080008026a07e9dfb6cb349d3bce51f01676ee5eff957321d34d0c2a293ee23440150092b73a06cd7c96729fdf3daf75ea12285d9b9178d44695e6f0e7138b69797198c4f184f";
-    let eip1559_tx = "02f8b70120830f4240850235c20b228305e81894a436c9048d4927ff69943278aae0e426f9f68755870a3e2aefcf5f00b8442c65169e00000000000000000000000000000000000000000000000000000000000013880000000000000000000000000000000000000000000000000000000000000001c001a03143ad69303279831b4716f595a33be890167259f6c212f1aa70e0e68363ff52a0185006794dc10cf1cb9e3aa4ad5ecf48ef1e0456ef14ec1f2024eb36b5b1812d";
-    
-    println!("Transaction hex: {}", hex::encode(&legacy_tx));
-    
-    match decode_transaction(&legacy_tx) {
+pub fn txn_decoder(tx: &str) -> Result<Vec<u8>, Box<dyn std::error::Error>> {
+    match decode_transaction(tx) {
         Ok(decoded) => {
             println!("Decoded Legacy Transaction:");
             println!("  Nonce: {:?}", decoded.nonce);
             println!("  Gas Price: {:?}", decoded.gas_price);
             println!("  Gas Limit: {:?}", decoded.gas_limit);
-            println!("  To: {:?}", decoded.to);
+            println!("  To: {:?}", decoded.to.unwrap());
             println!("  Value: {:?}", decoded.value);
             println!("  Data length: {} bytes", decoded.data.len());
             println!("  V: {:?}", decoded.v);
             println!("  R: {:?}", decoded.r);
             println!("  S: {:?}", decoded.s);
+            Ok(decoded.data)
         },
-        Err(e) => println!("Error decoding transaction: {}", e),
+        Err(e) => Err(e),
     }
-
-    println!("Transaction hex: {}", hex::encode(&eip1559_tx));
-    
-    match decode_transaction(&eip1559_tx) {
-        Ok(decoded) => {
-            println!("Decoded Legacy Transaction:");
-            println!("  Nonce: {:?}", decoded.nonce);
-            println!("  Gas Price: {:?}", decoded.gas_price);
-            println!("  Gas Limit: {:?}", decoded.gas_limit);
-            println!("  To: {:?}", decoded.to);
-            println!("  Value: {:?}", decoded.value);
-            println!("  Data length: {:?} bytes", decoded.data);
-            println!("  V: {:?}", decoded.v);
-            println!("  R: {:?}", decoded.r);
-            println!("  S: {:?}", decoded.s);
-        },
-        Err(e) => println!("Error decoding transaction: {}", e),
-    }
-
-    Ok(())
 }
