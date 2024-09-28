@@ -1,5 +1,3 @@
-use std::{f32::consts::E, str::Bytes};
-
 use ethereum_types::{H160, U256, H256};
 use rlp::{Rlp, Decodable, DecoderError};
 use crate::utils;
@@ -27,6 +25,7 @@ impl Decodable for AccessListItem {
 }
 
 #[derive(Debug)]
+#[allow(dead_code)]
 pub struct AccessList(pub Vec<AccessListItem>);
 
 impl Decodable for AccessList {

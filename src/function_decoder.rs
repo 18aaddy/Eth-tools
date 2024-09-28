@@ -1,11 +1,11 @@
-// use reqwest::Error as ReqwestError;
 use serde::Deserialize;
 use anyhow::{Error, Result};
-use futures::future::BoxFuture;
-use futures::FutureExt; // For `.boxed()`
 use crate::utils;
-use num_bigint::BigUint;
-use num_traits::Num;
+use ethabi::Token;
+use ethabi::ParamType;
+use tiny_keccak::{Hasher, Keccak};
+use hex;
+use regex::Regex;
 
 #[derive(Deserialize, Debug)]
 struct SignatureResponse {
@@ -18,7 +18,7 @@ struct FunctionSignature {
     text_signature: String,
 }
 
-pub async fn final_result_from_calldata(mut call_data: &str) -> Result<(), Error> {
+pub async fn final_result_from_calldata(call_data: &str) -> Result<(), Error> {
     // Check if the call_data is empty or too short
     if call_data.is_empty() || call_data.len() < 10 {
         println!("Invalid calldata, nothing to decode.");
@@ -46,19 +46,17 @@ pub async fn final_result_from_calldata(mut call_data: &str) -> Result<(), Error
         return Err(Error::msg("No function signature found"));
     }
 
-    let extracted_params = extract_params(&function_signature); // This function is assumed to be defined elsewhere
-    let new_params: Vec<&str> = extracted_params.iter().map(|s| s.as_str()).collect();
-    let str_params: &[&str] = &new_params;
-    let params = decode_calldata(call_data, str_params);
-    println!("Function signature: {}", function_signature);
-    println!("Parameters: {:?}", params);
-    // call_data = &call_data[index..]; // Remove the decoded part from calldata
-    // final_result_from_calldata(call_data).await?;
+    let err = decode_without_abi(function_signature.as_str(), call_data).err(); 
+    if let Some(err) = err {
+        println!("Error decoding calldata: {:?}", err);
+        return Err(Error::msg("Error decoding calldata"));
+    }
+
     Ok(())
 }
 
 
-fn get_selector_from_call_data(call_data: &str) -> Result<String, Error> {
+pub fn get_selector_from_call_data(call_data: &str) -> Result<String, Error> {
     let call_data = utils::remove_0x_prefix(call_data);
     if call_data.len() < 8 {
         return Err(Error::msg("Call data is too short"));
@@ -81,259 +79,196 @@ pub async fn get_function_signature(function_selector: &str) -> Result<String, E
     Ok(response.results[0].text_signature.clone())
 }
 
-fn extract_params(function_signature: &str) -> Vec<String> {
-    // Find the opening and closing parentheses
-    if let Some(start) = function_signature.find('(') {
-        if let Some(end) = function_signature.find(')') {
-            // Extract the part between the parentheses
-            let params_str = &function_signature[start + 1..end];
-
-            // Split by commas and collect into a vector of parameter types
-            return params_str
-                .split(',')
-                .map(|param| param.trim().to_string()) // Trim whitespace and collect params
-                .collect();
-        }
-    }
-    
-    // If no parameters found, return an empty vector
-    vec![]
+pub struct CalldataDecoder {
+    function_signature: String,
+    param_types: Vec<ParamType>,
 }
 
-fn extract_params_from_calldata(extracted_params: &Vec<String>, call_data: &str) -> (Result<Vec<String>, Error>, usize) {
-    let mut params: Vec<String> = Vec::new();
-    let call_data = utils::remove_0x_prefix(call_data);
-    let mut index = 0; // Track the position in calldata
-
-    for param_type in extracted_params {
-        match param_type.as_str() {
-            "bool" => {
-                params.push(format!("{}", &call_data[index..index + 2])); // 1 byte for bool
-                index += 2;
-            }
-            // Integers
-            "uint256" | "uint" | "int" | "int256" => {
-                params.push(format!("{}", &call_data[index..index + 64])); // 32 bytes (256 bits)
-                index += 64;
-            }
-            "uint128" | "int128" => {
-                params.push(format!("{}", &call_data[index..index + 32])); // 16 bytes (128 bits)
-                index += 32;
-            }
-            "uint64" | "int64" => {
-                params.push(format!("{}", &call_data[index..index + 16])); // 8 bytes (64 bits)
-                index += 16;
-            }
-            "uint32" | "int32" => {
-                params.push(format!("{}", &call_data[index..index + 8])); // 4 bytes (32 bits)
-                index += 8;
-            }
-            "uint16" | "int16" => {
-                params.push(format!("{}", &call_data[index..index + 4])); // 2 bytes (16 bits)
-                index += 4;
-            }
-            "uint8" | "int8" => {
-                params.push(format!("{}", &call_data[index..index + 2])); // 1 byte (8 bits)
-                index += 2;
-            }
-            // Address
-            "address" => {
-                params.push(format!("{}", &call_data[index..index + 40])); // 20 bytes (40 hex characters)
-                index += 40;
-            }
-            // For dynamic types
-            "string" => {
-                // Read length (4 bytes)
-                let length_hex = &call_data[index..index + 8];
-                let length = match u64::from_str_radix(length_hex, 16) {
-                    Ok(l) => l,
-                    Err(e) => return (Err(Error::msg(e.to_string())), index),
-                }; // Convert hex to length
-                index += 8; // Move index forward
-                
-                // Read actual string bytes (length * 2 for hex)
-                let string_bytes = &call_data[index..index + (length * 2) as usize];
-                params.push(format!("{}", string_bytes)); // Add string bytes
-                index += (length * 2) as usize; // Move index forward
-            }
-            "bytes" => {
-                // Read length (4 bytes)
-                let length_hex = &call_data[index..index + 8];
-                let length = match u64::from_str_radix(length_hex, 16) {
-                    Ok(l) => l,
-                    Err(e) => return (Err(Error::msg(e.to_string())), index),
-                }; // Convert hex to length
-                index += 8; // Move index forward
-                
-                // Read actual bytes (length * 2 for hex)
-                let byte_array = &call_data[index..index + (length * 2) as usize];
-                params.push(format!("{}", byte_array)); // Add bytes
-                index += (length * 2) as usize; // Move index forward
-            }
-            "address[]" => {
-                // Read length (4 bytes)
-                let array_offset = usize::from_str_radix(&call_data[index..index + 64], 16).unwrap();
-                index += array_offset * 2; // Move index forward
-                let array_length = usize::from_str_radix(&call_data[index..index + 64], 16).unwrap();
-                index += 64; // Move index forward
-                // Read actual bytes (length * 2 for hex)
-                let array_data = &call_data[index..index + (array_length * 20 * 2) as usize];
-                params.push(format!("{}", array_data)); // Add array data
-                index += (array_length * 2) as usize; // Move index forward
-            }
-            "bytes[]" => {
-                // Read length (4 bytes)
-                let array_offset = usize::from_str_radix(&call_data[index..index + 64], 16).unwrap();
-                index += array_offset * 2; // Move index forward
-                let array_length = usize::from_str_radix(&call_data[index..index + 64], 16).unwrap();
-                index += 64; // Move index forward
-                // Read actual bytes (length * 2 for hex)
-                let array_data = &call_data[index..index + (array_length * 2 * 2) as usize];
-                params.push(format!("{}", array_data)); // Add array data
-                index += (array_length * 2) as usize; // Move index forward
-            }
-            _ => {
-                println!("Unknown type: {}", param_type);
-            }
-        }
+impl CalldataDecoder {
+    pub fn new(function_signature: &str) -> Result<Self, Box<dyn std::error::Error>> {
+        let (param_types, _) = Self::parse_signature(function_signature)?;
+        Ok(Self {
+            function_signature: function_signature.to_string(),
+            param_types,
+        })
     }
 
-    (Ok(params), index)
-}
+    pub fn decode_calldata(&self, calldata: &str) -> Result<Vec<Token>, Box<dyn std::error::Error>> {
+        let calldata = hex::decode(calldata.strip_prefix("0x").unwrap_or(calldata))?;
+        
+        // Verify function selector
+        let expected_selector = self.compute_function_selector(&self.function_signature);
+        if calldata[..4] != expected_selector {
+            return Err("Function selector mismatch".into());
+        }
 
-fn decode_calldata(calldata: &str, types: &[&str]) -> Vec<String> {
-    let calldata = utils::remove_0x_prefix(calldata);
-    let mut params: Vec<String> = Vec::new();
-    let mut dynamic_offsets: Vec<usize> = Vec::new();
-    let mut offset = 8; // Skip the first 4 bytes for the function selector
+        // Decode parameters
+        ethabi::decode(&self.param_types, &calldata[4..]).map_err(|e| e.into())
+    }
 
-    // First pass: decode static types and collect dynamic offsets
-    for &typ in types {
+    fn parse_signature(signature: &str) -> Result<(Vec<ParamType>, Option<ParamType>), Box<dyn std::error::Error>> {
+        let re = Regex::new(r"(\w+)\((.*)\)(\s*->\s*(.+))?").unwrap();
+        let caps = re.captures(signature).ok_or("Invalid function signature")?;
+
+        let params_str = caps.get(2).map_or("", |m| m.as_str());
+        let return_type_str = caps.get(4).map(|m| m.as_str());
+
+        let param_types = params_str
+            .split(',')
+            .filter(|s| !s.is_empty())
+            .map(Self::parse_type)
+            .collect::<Result<Vec<_>, _>>()?;
+
+        let return_type = return_type_str.map(Self::parse_type).transpose()?;
+
+        Ok((param_types, return_type))
+    }
+
+    fn parse_type(typ: &str) -> Result<ParamType, Box<dyn std::error::Error>> {
+        let typ = typ.trim();
+
+        // Check for array types first
+        if typ.ends_with("[]") {
+            let inner = Self::parse_type(&typ[..typ.len() - 2])?;
+            return Ok(ParamType::Array(Box::new(inner)));
+        }
+
+        // Check for fixed-size array
+        if let Some(captures) = Regex::new(r"^(.+)\[(\d+)\]$")?.captures(typ) {
+            let inner = Self::parse_type(captures.get(1).unwrap().as_str())?;
+            let size = captures.get(2).unwrap().as_str().parse::<usize>()?;
+            return Ok(ParamType::FixedArray(Box::new(inner), size));
+        }
+
+        // Parse other types
         match typ {
-            "address" => {
-                let param = &calldata[offset + 24..offset + 64]; // last 20 bytes for address
-                params.push(format!("0x{}", param));
-            }
-            "uint256" | "int256" | "bool" => {
-                let param = &calldata[offset..offset + 64]; // 32-byte value
-                params.push(decode_integer_or_bool(param, typ));
-            }
-            // For dynamic types, we store their offset for later decoding
-            "string" | "bytes" | "address[]" | "uint256[]" | "string[]" => {
-                let dynamic_offset = usize::from_str_radix(&calldata[offset..offset + 64], 16).unwrap() * 2;
-                dynamic_offsets.push(dynamic_offset);
-                params.push(format!("Dynamic offset: {}", dynamic_offset));
-            }
-            _ => {
-                println!("Unsupported type: {}", typ);
+            "address" => Ok(ParamType::Address),
+            "bool" => Ok(ParamType::Bool),
+            "string" => Ok(ParamType::String),
+            "bytes" => Ok(ParamType::Bytes),
+
+            // Unsigned integers
+            t if t.starts_with("uint") => {
+                let size = t[4..].parse::<usize>().map_err(|_| "Invalid uint size")?;
+                if size % 8 == 0 && size <= 256 {
+                    Ok(ParamType::Uint(size))
+                } else {
+                    Err("Invalid uint size".into())
+                }
+            },
+
+            // Signed integers
+            t if t.starts_with("int") => {
+                let size = t[3..].parse::<usize>().map_err(|_| "Invalid int size")?;
+                if size % 8 == 0 && size <= 256 {
+                    Ok(ParamType::Int(size))
+                } else {
+                    Err("Invalid int size".into())
+                }
+            },
+
+            // Fixed-size bytes
+            t if t.starts_with("bytes") => {
+                if t == "bytes" {
+                    Ok(ParamType::Bytes)
+                } else {
+                    let size = t[5..].parse::<usize>().map_err(|_| "Invalid bytes size")?;
+                    if size > 0 && size <= 32 {
+                        Ok(ParamType::FixedBytes(size))
+                    } else {
+                        Err("Invalid fixed bytes size".into())
+                    }
+                }
+            },
+
+            // Tuples (e.g., "(uint256,address)")
+            t if t.starts_with("(") && t.ends_with(")") => {
+                let inner = &t[1..t.len() - 1];
+                let inner_types = Self::split_tuple_types(inner)?
+                    .into_iter()
+                    .map(|t| Self::parse_type(&t))
+                    .collect::<Result<Vec<_>, _>>()?;
+                Ok(ParamType::Tuple(inner_types))
+            },
+
+            // Add support for fixed point numbers if needed
+            // "fixed" | "ufixed" => {...}
+
+            _ => Err(format!("Unsupported type: {}", typ).into()),
+        }
+    }
+
+    fn split_tuple_types(tuple_str: &str) -> Result<Vec<String>, Box<dyn std::error::Error>> {
+        let mut result = Vec::new();
+        let mut current = String::new();
+        let mut paren_count = 0;
+
+        for ch in tuple_str.chars() {
+            match ch {
+                '(' => {
+                    paren_count += 1;
+                    current.push(ch);
+                },
+                ')' => {
+                    paren_count -= 1;
+                    current.push(ch);
+                },
+                ',' if paren_count == 0 => {
+                    if !current.is_empty() {
+                        result.push(current.trim().to_string());
+                        current.clear();
+                    }
+                },
+                _ => current.push(ch),
             }
         }
-        offset += 64; // Move to the next parameter (32 bytes per parameter)
-    }
 
-    // Second pass: decode dynamic types
-    for (i, &typ) in types.iter().enumerate() {
-        if let Some(dynamic_offset) = dynamic_offsets.get(i) {
-            match typ {
-                "string" => {
-                    let decoded_string = decode_string(calldata, *dynamic_offset);
-                    params[i] = decoded_string;
-                }
-                "bytes" => {
-                    let decoded_bytes = decode_bytes(calldata, *dynamic_offset);
-                    params[i] = decoded_bytes;
-                }
-                "address[]" => {
-                    let decoded_array = decode_address_array(calldata, *dynamic_offset);
-                    params[i] = format!("{:?}", decoded_array);
-                }
-                "uint256[]" => {
-                    let decoded_array = decode_uint_array(calldata, *dynamic_offset);
-                    params[i] = format!("{:?}", decoded_array);
-                }
-                "string[]" => {
-                    let decoded_array = decode_string_array(calldata, *dynamic_offset);
-                    params[i] = format!("{:?}", decoded_array);
-                }
-                _ => {}
-            }
+        if !current.is_empty() {
+            result.push(current.trim().to_string());
         }
-    }
 
-    params
-}
-
-fn decode_integer_or_bool(data: &str, typ: &str) -> String {
-    match typ {
-        "bool" => {
-            if &data[63..64] == "1" {
-                "true".to_string()
-            } else {
-                "false".to_string()
-            }
+        if paren_count != 0 {
+            return Err("Mismatched parentheses in tuple type".into());
         }
-        _ => BigUint::from_str_radix(data, 16).unwrap().to_string(), // Handle integers like uint256
+
+        Ok(result)
+    }
+
+    fn compute_function_selector(&self, signature: &str) -> [u8; 4] {
+        let mut keccak = Keccak::v256();
+        keccak.update(signature.as_bytes());
+        let mut hash = [0u8; 32];
+        keccak.finalize(&mut hash);
+        [hash[0], hash[1], hash[2], hash[3]]
     }
 }
 
-fn decode_string(calldata: &str, offset: usize) -> String {
-    let string_length = usize::from_str_radix(&calldata[offset..offset + 64], 16).unwrap();
-    let string_data = &calldata[offset + 64..offset + 64 + string_length * 2];
-    hex_to_utf8(string_data)
-}
-
-fn decode_bytes(calldata: &str, offset: usize) -> String {
-    let bytes_length = usize::from_str_radix(&calldata[offset..offset + 64], 16).unwrap();
-    let bytes_data = &calldata[offset + 64..offset + 64 + bytes_length * 2];
-    format!("0x{}", bytes_data)
-}
-
-fn decode_address_array(calldata: &str, offset: usize) -> Vec<String> {
-    let array_length = usize::from_str_radix(&calldata[offset..offset + 64], 16).unwrap();
-    let mut addresses: Vec<String> = Vec::new();
-    let mut current_offset = offset + 64;
-
-    for _ in 0..array_length {
-        let address = &calldata[current_offset + 24..current_offset + 64]; // Last 20 bytes
-        addresses.push(format!("0x{}", address));
-        current_offset += 64;
+// Helper function to convert ethabi::Token to a more readable format
+pub fn token_to_string(token: &Token) -> String {
+    match token {
+        Token::Address(address) => format!("Address: 0x{:x}", address),
+        Token::Uint(uint) => format!("Uint: {}", uint),
+        Token::Int(int) => format!("Int: {}", int),
+        Token::Bool(b) => format!("Bool: {}", b),
+        Token::String(s) => format!("String: {}", s),
+        Token::Bytes(bytes) => format!("Bytes: 0x{}", hex::encode(bytes)),
+        Token::FixedBytes(bytes) => format!("FixedBytes: 0x{}", hex::encode(bytes)),
+        Token::Array(tokens) => format!("Array: [{}]", tokens.iter().map(token_to_string).collect::<Vec<_>>().join(", ")),
+        Token::FixedArray(tokens) => format!("FixedArray: [{}]", tokens.iter().map(token_to_string).collect::<Vec<_>>().join(", ")),
+        Token::Tuple(tokens) => format!("Tuple: ({})", tokens.iter().map(token_to_string).collect::<Vec<_>>().join(", ")),
     }
-    addresses
 }
 
-fn decode_uint_array(calldata: &str, offset: usize) -> Vec<String> {
-    let array_length = usize::from_str_radix(&calldata[offset..offset + 64], 16).unwrap();
-    let mut uints: Vec<String> = Vec::new();
-    let mut current_offset = offset + 64;
+// Example usage
+fn decode_without_abi(function_signature: &str, calldata: &str) -> Result<(), Box<dyn std::error::Error>> {
+    let decoder = CalldataDecoder::new(function_signature)?;
 
-    for _ in 0..array_length {
-        let value = &calldata[current_offset..current_offset + 64];
-        uints.push(u64::from_str_radix(value, 16).unwrap().to_string());
-        current_offset += 64;
+    let decoded_params = decoder.decode_calldata(calldata)?;
+
+    println!("Decoded parameters:");
+    for (i, param) in decoded_params.iter().enumerate() {
+        println!("  Parameter {}: {}", i, token_to_string(param));
     }
-    uints
-}
 
-fn decode_string_array(calldata: &str, offset: usize) -> Vec<String> {
-    let array_length = usize::from_str_radix(&calldata[offset..offset + 64], 16).unwrap();
-    let mut strings: Vec<String> = Vec::new();
-    let mut current_offset = offset + 64;
-
-    for _ in 0..array_length {
-        let string_offset = usize::from_str_radix(&calldata[current_offset..current_offset + 64], 16).unwrap() * 2;
-        let string_length = usize::from_str_radix(&calldata[string_offset..string_offset + 64], 16).unwrap();
-        let string_data = &calldata[string_offset + 64..string_offset + 64 + string_length * 2];
-        let decoded_string = hex_to_utf8(string_data);
-        strings.push(decoded_string);
-        current_offset += 64;
-    }
-    strings
-}
-
-fn hex_to_utf8(hex: &str) -> String {
-    let bytes = (0..hex.len())
-        .step_by(2)
-        .map(|i| u8::from_str_radix(&hex[i..i + 2], 16).unwrap())
-        .collect::<Vec<u8>>();
-    String::from_utf8(bytes).unwrap()
+    Ok(())
 }

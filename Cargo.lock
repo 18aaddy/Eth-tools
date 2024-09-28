@@ -3264,6 +3264,7 @@ name = "txn_decoder"
 version = "0.1.0"
 dependencies = [
  "anyhow",
+ "ethabi",
  "ethereum-types",
  "ethers",
  "futures",
@@ -3271,11 +3272,13 @@ dependencies = [
  "lazy_static",
  "num-bigint",
  "num-traits",
+ "regex",
  "reqwest",
  "rlp",
  "secp256k1",
  "serde",
  "sha3",
+ "tiny-keccak",
  "tokio",
 ]
 
